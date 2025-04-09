@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OKX Crypto Technical Analysis</title>
+    <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.development.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/babel-standalone@7/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.1.1/crypto-js.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        // OKX API Credentials (Thay bằng thông tin thật của bạn)
+        const API_KEY = "YOUR_API_KEY";
+        const SECRET_KEY = "YOUR_SECRET_KEY";
+        const PASSPHRASE = "YOUR_PASSPHRASE";
+        const BASE_URL = "https://www.okx.com";
+
+        // Hàm tạo signature cho OKX API
+        const generateSignature = (timestamp, method, requestPath, body = "") => {
+            const message = timestamp + method + requestPath + body;
+            return CryptoJS.HmacSHA256(message, SECRET_KEY).toString(CryptoJS.enc.Base64);
+        };
+
+        // Hàm gọi API OKX
+        const fetchOKXData = async (endpoint, params = {}) => {
+            const timestamp = new Date().toISOString();
+            const queryString = new URLSearchParams(params).toString();
+            const requestPath = `${endpoint}${queryString ? "?" + queryString : ""}`;
+            const method = "GET";
+            const signature = generateSignature(timestamp, method, requestPath);
+
+            try {
+                const response = await fetch(BASE_URL + requestPath, {
+                    headers: {
+                        "OK-ACCESS-KEY": API_KEY,
+                        "OK-ACCESS-SIGN": signature,
+                        "OK-ACCESS-TIMESTAMP": timestamp,
+                        "OK-ACCESS-PASSPHRASE": PASSPHRASE,
+                        "Content-Type": "application/json"
+                    }
+                });
+                return await response.json();
+            } catch (error) {
+                console.error("API Error:", error);
+                return { code: "1", msg: "Failed to fetch data" };
+            }
+        };
+
+        // Danh sách coin
+        const initialCoins = [
+            { id: "PI-USDT", name: "Pi Network", symbol: "PI" },
+            { id: "BTC-USDT", name: "Bitcoin", symbol: "BTC" },
+            { id: "ETH-USDT", name: "Ethereum", symbol: "ETH" },
+        ];
+
+        // Component CoinCard
+        const CoinCard = ({ coin, onSelect, priceData }) => (
+            <div 
+                className="bg-gray-800 p-4 rounded-lg cursor-pointer hover:bg-gray-700 transition-colors"
+                onClick={() => onSelect(coin)}
+            >
+                <h3 className="text-lg font-semibold text-white">{coin.name} ({coin.symbol})</h3>
+                <p className="text-gray-300">${priceData?.last || "Loading..."}</p>
+                <p className={priceData?.change >= 0 ? "text-green-500" : "text-red-500"}>
+                    {priceData?.change >= 0 ? "+" : ""}{priceData?.change || 0}%
+                </p>
+            </div>
+        );
+
+        // Component PriceChart
+        const PriceChart = ({ coin }) => {
+            const chartRef = React.useRef(null);
+            const [chartInstance, setChartInstance] = useState(null);
+            const [chartData, setChartData] = useState(null);
+
+            useEffect(() => {
+                const fetchChartData = async () => {
+                    const data = await fetchOKXData("/api/v5/market/history-candles", {
+                        instId: coin.id,
+                        bar: "1H",
+                        limit: "100"
+                    });
+                    if (data.code === "0") {
+                        const candles = data.data.map(candle => ({
+                            time: new Date(parseInt(candle[0])).toLocaleTimeString(),
+                            price: parseFloat(candle[4])
+                        }));
+                        setChartData(candles.reverse());
+                    }
+                };
+                fetchChartData();
+            }, [coin]);
+
+            useEffect(() => {
+                if (chartInstance) chartInstance.destroy();
+                if (!chartData) return;
+
+                const ctx = chartRef.current.getContext("2d");
+                const newChart = new Chart(ctx, {
+                    type: "line",
+                    data: {
+                        labels: chartData.map(d => d.time),
+                        datasets: [{
+                            label: `Price (${coin.symbol})`,
+                            data: chartData.map(d => d.price),
+                            borderColor: "#3b82f6",
+                            tension: 0.1,
+                            fill: false
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        scales: { y: { beginAtZero: false } }
+                    }
+                });
+                setChartInstance(newChart);
+                return () => newChart.destroy();
+            }, [chartData]);
+
+            return <canvas ref={chartRef} className="w-full h-64"></canvas>;
+        };
+
+        // Component TechnicalIndicators
+        const TechnicalIndicators = ({ priceData }) => (
+            <div className="space-y-4">
+                <div>
+                    <h4 className="text-white">RSI (14)</h4>
+                    <p className="text-gray-300">Sample: 65.43</p>
+                </div>
+                <div>
+                    <h4 className="text-white">MACD</h4>
+                    <p className="text-gray-300">Sample: 12, 26, 9</p>
+                </div>
+                <div>
+                    <h4 className="text-white">Moving Average (50)</h4>
+                    <p className="text-gray-300">Sample: ${(priceData?.last * 0.995 || 0).toFixed(2)}</p>
+                </div>
+            </div>
+        );
+
+        // Main App Component
+        const App = () => {
+            const [coins, setCoins] = useState(initialCoins);
+            const [selectedCoin, setSelectedCoin] = useState(initialCoins[0]);
+            const [priceData, setPriceData] = useState({});
+            const [timeframe, setTimeframe] = useState("1D");
+
+            useEffect(() => {
+                const fetchPrices = async () => {
+                    const data = await fetchOKXData("/api/v5/market/tickers", { instType: "SPOT" });
+                    if (data.code === "0") {
+                        const prices = {};
+                        data.data.forEach(ticker => {
+                            const coin = initialCoins.find(c => c.id === ticker.instId);
+                            if (coin) {
+                                prices[coin.id] = {
+                                    last: parseFloat(ticker.last),
+                                    change: ((ticker.last - ticker.open24h) / ticker.open24h * 100).toFixed(2)
+                                };
+                            }
+                        });
+                        setPriceData(prices);
+                    }
+                };
+                fetchPrices();
+                const interval = setInterval(fetchPrices, 5000);
+                return () => clearInterval(interval);
+            }, []);
+
+            return (
+                <div className="min-h-screen bg-gray-900 text-white p-6">
+                    <h1 className="text-3xl font-bold mb-6 text-center">
+                        OKX Crypto Technical Analysis
+                    </h1>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+                        {coins.map(coin => (
+                            <CoinCard 
+                                key={coin.id} 
+                                coin={coin} 
+                                onSelect={setSelectedCoin}
+                                priceData={priceData[coin.id]}
+                            />
+                        ))}
+                    </div>
+
+                    <div className="bg-gray-800 p-6 rounded-lg">
+                        <div className="flex justify-between items-center mb-4">
+                            <h2 className="text-2xl font-semibold">
+                                {selectedCoin.name} Analysis
+                            </h2>
+                            <select 
+                                value={timeframe}
+                                onChange={(e) => setTimeframe(e.target.value)}
+                                className="bg-gray-700 p-2 rounded"
+                            >
+                                <option value="1H">1 Hour</option>
+                                <option value="1D">1 Day</option>
+                                <option value="1W">1 Week</option>
+                            </select>
+                        </div>
+
+                        <PriceChart coin={selectedCoin} />
+
+                        <div className="mt-6">
+                            <h3 className="text-xl font-semibold mb
